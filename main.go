@@ -13,14 +13,23 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jonas747/ogg"
-	"golang.org/x/text/encoding/unicode"
+	"github.com/zmb3/spotify/v2"
+	spotifyauth "github.com/zmb3/spotify/v2/auth"
+	"golang.org/x/oauth2/clientcredentials"
 	"google.golang.org/api/option"
 	"google.golang.org/api/youtube/v3"
 )
 
+const (
+	servicesOn = false
+)
+
 var (
+	ctx                   context.Context  = nil
 	ytService             *youtube.Service = nil
+	spotifyClient         *spotify.Client  = nil
 	isPlaying                              = false
+	charCount                              = 0
 	emptyqueue                             = true
 	isPaused                               = false
 	integerOptionMinValue                  = 1.0
@@ -113,6 +122,10 @@ var (
 		"play": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			switch i.Type {
 			case discordgo.InteractionApplicationCommandAutocomplete:
+
+				charCount += 1
+				myCharCount := charCount
+
 				filter := i.ApplicationCommandData().Options[0].StringValue()
 				choices := []*discordgo.ApplicationCommandOptionChoice{}
 
@@ -135,41 +148,51 @@ var (
 				}
 
 				//25 is the discord choice limit
-				maxResults := 25 - len(choices)
+				maxResults := 24 - len(choices)
 				if maxResults < 0 {
 					count += 1
 				}
+				time.Sleep(2 * time.Second)
 
-				fmt.Println("Resultados ", maxResults, " | count: ", count)
+				if myCharCount < charCount || len(filter) < 11 || maxResults < 10 {
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+						Data: &discordgo.InteractionResponseData{
+							Choices: choices,
+						},
+					})
+					return
+				}
 
-				if false {
-					call := ytService.Search.List([]string{"id", "snippet"}).
-						Q(filter).
-						VideoCategoryId("Music").
-						MaxResults(int64(maxResults))
-					response, err := call.Do()
-					if err != nil {
-						fmt.Println("fudeu playboy", err)
-					}
+				call := ytService.Search.List([]string{"id", "snippet"}).
+					Q(filter).
+					Type("video").
+					VideoCategoryId("10").
+					MaxResults(10)
 
-					for _, item := range response.Items {
-						switch item.Id.Kind {
-						case "youtube#video":
-							choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
-								Name:  "⬇️" + item.Snippet.Title,
-								Value: "video:" + item.Id.VideoId,
-							})
+				response, err := call.Do()
+				if err != nil {
+					fmt.Println("fudeu playboy", err)
+				}
 
-						case "youtube#channel":
-							//fodasse
-						case "youtube#playlist":
-							choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
-								Name:  "📀" + item.Snippet.Title,
-								Value: "playlist:" + item.Id.PlaylistId,
-							})
-						}
+				for _, item := range response.Items {
+					switch item.Id.Kind {
+					case "youtube#video":
+						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+							Name:  "⬇️" + item.Snippet.Title,
+							Value: "video:" + item.Id.VideoId,
+						})
+
+					case "youtube#channel":
+						//fodasse
+					case "youtube#playlist":
+						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+							Name:  "📀" + item.Snippet.Title,
+							Value: "playlist:" + item.Id.PlaylistId,
+						})
 					}
 				}
+
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionApplicationCommandAutocompleteResult,
 					Data: &discordgo.InteractionResponseData{
@@ -195,6 +218,20 @@ var (
 				link, err := url.Parse(options[0].StringValue())
 				if strings.Contains(link.Hostname(), "spotify") {
 					isLink = true
+					fmt.Println("Chegou no negocio certo")
+					split := strings.Split(link.Path, "/")
+					if split[1] == "playlist" {
+						fmt.Println("Split 2 eh igual a : ", split[2])
+						ids := parseSpotifyPlaylist(spotify.ID(split[2]))
+
+						for _, id := range ids {
+							fmt.Println("The id is: ", id)
+							name := download("https://www.youtube.com/watch?v=" + id)
+
+							fmt.Println("The name is: ", name[0])
+							queue = append(queue, name[0])
+						}
+					}
 				}
 				if strings.Contains(link.Hostname(), "youtu") {
 					isLink = true
@@ -260,7 +297,6 @@ var (
 						time.Sleep(5 * time.Second)
 					}
 					if mode == "playlist" {
-						// TODO: add all the playlist songs to the queue
 						names := download("https://www.youtube.com/playlist?list=" + path)
 						var content strings.Builder
 						for _, name := range names {
@@ -374,15 +410,29 @@ var (
 )
 
 func main() {
-	ctx := context.Background()
+	context := context.Background()
+	ctx = context
 
-	newService, err := youtube.NewService(ctx, option.WithAPIKey(os.Getenv("YoutubeApiKey")))
+	newService, err := youtube.NewService(ctx, option.WithAPIKey(os.Getenv("YOUTUBE_API_KEY")))
 	if err != nil {
 		fmt.Println("Error creating new YouTube client: %v", err)
 	}
 	ytService = newService
 
-	dg, err := discordgo.New("Bot " + os.Getenv("DiscordToken"))
+	config := &clientcredentials.Config{
+		ClientID:     os.Getenv("SPOTIFY_CLIENT_ID"),
+		ClientSecret: os.Getenv("SPOTIFY_CLIENT_SECRET"),
+		TokenURL:     spotifyauth.TokenURL,
+	}
+	token, err := config.Token(ctx)
+	if err != nil {
+		fmt.Println("couldn't get token: %v", err)
+	}
+
+	httpClient := spotifyauth.New().Client(ctx, token)
+	spotifyClient = spotify.New(httpClient)
+
+	dg, err := discordgo.New("Bot " + os.Getenv("DISCORD_TOKEN"))
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -433,7 +483,7 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 			isPlaying = false
 			break
 		}
-		file, err := os.Open("Music\\" + queue[index])
+		file, err := os.Open("Music/" + queue[index])
 		fmt.Println("Current music playing: ", queue[index])
 		if err != nil {
 			fmt.Errorf("failed to music file: %w", err)
@@ -484,24 +534,52 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 	}
 }
 
+func parseSpotifyPlaylist(id spotify.ID) []string {
+	fmt.Println("parsing the playlist")
+	ids := []string{}
+	fields := spotify.Fields("items(track)")
+
+	results, err := spotifyClient.GetPlaylistItems(ctx, id, fields)
+	if err != nil {
+		fmt.Println("could not find the playlist")
+	}
+	fmt.Println("got the results")
+	fmt.Println("Lenght", len(results.Items))
+
+	for _, item := range results.Items {
+
+		filter := item.Track.Track.Name + " " + item.Track.Track.Artists[0].Name
+		fmt.Println("This is the filter: ", filter)
+
+		call := ytService.Search.List([]string{"id", "snippet"}).
+			Q(filter).
+			Type("video").
+			VideoCategoryId("10").
+			MaxResults(1)
+
+		response, err := call.Do()
+		if err != nil {
+			fmt.Println("Faz o L")
+		}
+
+		ids = append(ids, response.Items[0].Id.VideoId)
+	}
+	return ids
+}
+
 func download(link string) []string {
 	paths := []string{}
 	stdout, err := exec.Command("yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link).Output()
-
-	println(len(stdout))
-
-	d := unicode.UTF8.NewDecoder()
-	out, err := d.Bytes(stdout)
 	if err != nil {
-		panic(err)
+		fmt.Println("could not download video")
 	}
 
-	fmt.Println(string(out))
+	fmt.Println(string(stdout))
 
 	splitTest := strings.Split(string(stdout), "\"")
 	for i, s := range splitTest {
 		if i%2 == 1 {
-			paths = append(paths, s[6:])
+			paths = append(paths, s[8:])
 		}
 	}
 

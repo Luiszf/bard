@@ -4,7 +4,6 @@ go 1.23.5
 
 require (
 	github.com/bwmarrin/discordgo v0.28.1
-	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/jonas747/ogg v0.0.0-20161220051205-b4f6f4cf3757
 	google.golang.org/api v0.218.0
 )
@@ -21,6 +20,7 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
+	github.com/zmb3/spotify/v2 v2.4.3 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.54.0 // indirect
 	go.opentelemetry.io/otel v1.31.0 // indirect
 	go.opentelemetry.io/otel/metric v1.31.0 // indirect
