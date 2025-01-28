@@ -40,25 +40,13 @@ var (
 
 	commands = []*discordgo.ApplicationCommand{
 		{
-			Name:        "ytdl",
-			Description: "Download the music file from a youtube link",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "link",
-					Description: "the youtube link that is gonna be downloaded",
-					Required:    true,
-				},
-			},
-		},
-		{
 			Name:        "play",
 			Description: "join the voice channel of the messege author and play the song on path",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:         discordgo.ApplicationCommandOptionString,
-					Name:         "path",
-					Description:  "the path to the music",
+					Name:         "search",
+					Description:  "query for songs",
 					Required:     true,
 					Autocomplete: true,
 				},
@@ -75,7 +63,6 @@ var (
 				},
 			},
 		},
-
 		{
 			Name:        "pause",
 			Description: "toggle the music",
@@ -90,39 +77,9 @@ var (
 		},
 	}
 	commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
-		"ytdl": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			options := i.ApplicationCommandData().Options
-
-			optionMap := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(options))
-			for _, opt := range options {
-				optionMap[opt.Name] = opt
-			}
-
-			if option, ok := optionMap["link"]; ok {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "Hey there! Congratulations, you just downloaded a youtube video",
-					},
-				})
-
-				// TODO: error messege if invalid link
-				download(option.StringValue())
-				return
-			}
-
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					// TODO: better error messege
-					Content: "Something went wrong :(",
-				},
-			})
-		},
 		"play": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			switch i.Type {
 			case discordgo.InteractionApplicationCommandAutocomplete:
-
 				charCount += 1
 				myCharCount := charCount
 
@@ -200,13 +157,6 @@ var (
 					},
 				})
 			case discordgo.InteractionApplicationCommand:
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "processing...",
-					},
-				})
-
 				isLink := false
 
 				options := i.ApplicationCommandData().Options
@@ -222,16 +172,15 @@ var (
 					split := strings.Split(link.Path, "/")
 					if split[1] == "playlist" {
 						fmt.Println("Split 2 eh igual a : ", split[2])
-						ids := parseSpotifyPlaylist(spotify.ID(split[2]))
-
-						for _, id := range ids {
-							fmt.Println("The id is: ", id)
-							name := download("https://www.youtube.com/watch?v=" + id)
-
-							fmt.Println("The name is: ", name[0])
-							queue = append(queue, name[0])
-						}
+						parseSpotifyPlaylist(spotify.ID(split[2]))
 					}
+
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: "added the [playlist](" + link.String() + ") to the queue",
+						},
+					})
 				}
 				if strings.Contains(link.Hostname(), "youtu") {
 					isLink = true
@@ -249,14 +198,13 @@ var (
 					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 						Type: discordgo.InteractionResponseChannelMessageWithSource,
 						Data: &discordgo.InteractionResponseData{
-							Content: "the song: \n" + content.String() + "\n was added with success",
+							Content: "the song: ***" + content.String() + "*** was added with success",
 						},
 					})
 
 				}
 
 				if isLink {
-
 					guild, err := s.State.Guild(i.GuildID)
 					if err != nil {
 						fmt.Println("Cound`t fing guild id:", err)
@@ -272,12 +220,39 @@ var (
 					return
 				}
 
-				if option, ok := optionMap["path"]; ok {
+				if option, ok := optionMap["search"]; ok {
 					split := strings.Split(option.StringValue(), ":")
+
+					if len(split) < 2 {
+						dir, err := os.ReadDir("Music")
+						if err != nil {
+							// TODO:
+						}
+
+						filter := i.ApplicationCommandData().Options[0].StringValue()
+						for _, file := range dir {
+							if strings.Contains(strings.ToLower(file.Name()), strings.ToLower(filter)) {
+								queue = append(queue, file.Name())
+								s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+									Type: discordgo.InteractionResponseChannelMessageWithSource,
+									Data: &discordgo.InteractionResponseData{
+										Content: "> the song: ***" + file.Name() + "*** was added with success",
+									},
+								})
+								return
+							}
+						}
+						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+							Type: discordgo.InteractionResponseChannelMessageWithSource,
+							Data: &discordgo.InteractionResponseData{
+								Content: "> no music local found",
+							},
+						})
+						return
+					}
 
 					mode := split[0]
 					path := split[1]
-					println("nem fodendo")
 
 					if mode == "video" {
 						names := download("https://www.youtube.com/watch?v=" + path)
@@ -290,7 +265,7 @@ var (
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "the song: " + content.String() + " was added with success",
+								Content: "> the song: ***" + content.String() + "*** was added with success",
 							},
 						})
 
@@ -307,7 +282,7 @@ var (
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "the song: " + content.String() + " was added with success",
+								Content: "> the song: ***" + content.String() + "*** was added with success",
 							},
 						})
 
@@ -318,7 +293,7 @@ var (
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "the song: " + path + " was added with success",
+								Content: "> the song: ***" + path + "*** was added with success",
 							},
 						})
 					}
@@ -346,6 +321,8 @@ var (
 			}
 
 			var fileList strings.Builder
+
+			fileList.WriteString(">>>")
 
 			if len(i.ApplicationCommandData().Options) > 0 {
 				filter := i.ApplicationCommandData().Options[0].StringValue()
@@ -387,8 +364,9 @@ var (
 		},
 		"queue": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			var contentText strings.Builder
+			contentText.WriteString(">>> # Queue\n")
 			for _, songs := range queue[index:] {
-				contentText.WriteString(songs + "\n")
+				contentText.WriteString("* " + songs + "\n")
 			}
 
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -534,9 +512,10 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 	}
 }
 
-func parseSpotifyPlaylist(id spotify.ID) []string {
+func parseSpotifyPlaylist(id spotify.ID) {
 	fmt.Println("parsing the playlist")
 	ids := []string{}
+
 	fields := spotify.Fields("items(track)")
 
 	results, err := spotifyClient.GetPlaylistItems(ctx, id, fields)
@@ -559,12 +538,19 @@ func parseSpotifyPlaylist(id spotify.ID) []string {
 
 		response, err := call.Do()
 		if err != nil {
-			fmt.Println("Faz o L")
+			fmt.Println("Faz o L \n", err)
 		}
 
 		ids = append(ids, response.Items[0].Id.VideoId)
+
+		for _, id := range ids {
+			fmt.Println("The id is: ", id)
+			name := download("https://www.youtube.com/watch?v=" + id)
+
+			fmt.Println("The name is: ", name[0])
+			queue = append(queue, name[0])
+		}
 	}
-	return ids
 }
 
 func download(link string) []string {
