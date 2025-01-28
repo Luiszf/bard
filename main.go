@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jonas747/ogg"
+	"golang.org/x/text/encoding/unicode"
 	"google.golang.org/api/option"
 	"google.golang.org/api/youtube/v3"
 )
@@ -23,8 +25,9 @@ var (
 	isPaused                               = false
 	integerOptionMinValue                  = 1.0
 	dmPermission                           = false
-	queue                                  = []string{""}
+	queue                                  = []string{}
 	index                                  = 0
+	count                                  = 0
 
 	commands = []*discordgo.ApplicationCommand{
 		{
@@ -90,7 +93,7 @@ var (
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
-						Content: "Hey there! Congratulations, you just dowloaded a youtube video",
+						Content: "Hey there! Congratulations, you just downloaded a youtube video",
 					},
 				})
 
@@ -113,11 +116,15 @@ var (
 				filter := i.ApplicationCommandData().Options[0].StringValue()
 				choices := []*discordgo.ApplicationCommandOptionChoice{}
 
+				link, err := url.Parse(filter)
+				if strings.Contains(link.Hostname(), "spotify") || strings.Contains(link.Hostname(), "youtu") {
+					return
+				}
+
 				dir, err := os.ReadDir("Music")
 				if err != nil {
 					panic(err)
 				}
-
 				for _, file := range dir {
 					if strings.Contains(strings.ToLower(file.Name()), strings.ToLower(filter)) {
 						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
@@ -129,6 +136,11 @@ var (
 
 				//25 is the discord choice limit
 				maxResults := 25 - len(choices)
+				if maxResults < 0 {
+					count += 1
+				}
+
+				fmt.Println("Resultados ", maxResults, " | count: ", count)
 
 				if false {
 					call := ytService.Search.List([]string{"id", "snippet"}).
@@ -145,7 +157,7 @@ var (
 						case "youtube#video":
 							choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 								Name:  "⬇️" + item.Snippet.Title,
-								Value: "video:" + item.Id.VideoId + ":" + item.Snippet.Title,
+								Value: "video:" + item.Id.VideoId,
 							})
 
 						case "youtube#channel":
@@ -153,7 +165,7 @@ var (
 						case "youtube#playlist":
 							choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 								Name:  "📀" + item.Snippet.Title,
-								Value: "playlist:" + item.Id.PlaylistId + ":" + item.Snippet.Title,
+								Value: "playlist:" + item.Id.PlaylistId,
 							})
 						}
 					}
@@ -165,40 +177,101 @@ var (
 					},
 				})
 			case discordgo.InteractionApplicationCommand:
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "processing...",
+					},
+				})
+
+				isLink := false
+
 				options := i.ApplicationCommandData().Options
 				optionMap := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(options))
 				for _, opt := range options {
 					optionMap[opt.Name] = opt
 				}
+
+				link, err := url.Parse(options[0].StringValue())
+				if strings.Contains(link.Hostname(), "spotify") {
+					isLink = true
+				}
+				if strings.Contains(link.Hostname(), "youtu") {
+					isLink = true
+					names := download(options[0].StringValue())
+					var content strings.Builder
+					for _, name := range names {
+						content.WriteString(name + " \n")
+						queue = append(queue, name)
+						for i, item := range queue {
+							println("Item da queue", i)
+							println(item)
+						}
+					}
+
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: "the song: \n" + content.String() + "\n was added with success",
+						},
+					})
+
+				}
+
+				if isLink {
+
+					guild, err := s.State.Guild(i.GuildID)
+					if err != nil {
+						fmt.Println("Cound`t fing guild id:", err)
+						return
+					}
+					if !isPlaying {
+						for _, vs := range guild.VoiceStates {
+							if vs.UserID == i.Member.User.ID {
+								join(guild.ID, vs.ChannelID, s)
+							}
+						}
+					}
+					return
+				}
+
 				if option, ok := optionMap["path"]; ok {
 					split := strings.Split(option.StringValue(), ":")
 
 					mode := split[0]
 					path := split[1]
+					println("nem fodendo")
 
 					if mode == "video" {
-						choiceName := split[2]
-						download("https://www.youtube.com/watch?v=" + path)
-						queue = append(queue, choiceName)
+						names := download("https://www.youtube.com/watch?v=" + path)
+						var content strings.Builder
+						for _, name := range names {
+							content.WriteString(name + " \n")
+							queue = append(queue, name)
+						}
 
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "the song: " + choiceName + " was added with success",
+								Content: "the song: " + content.String() + " was added with success",
 							},
 						})
 
 						time.Sleep(5 * time.Second)
 					}
 					if mode == "playlist" {
-						choiceName := split[2]
-						download("https://www.youtube.com/playlist?list=" + path)
-						queue = append(queue, choiceName)
+						// TODO: add all the playlist songs to the queue
+						names := download("https://www.youtube.com/playlist?list=" + path)
+						var content strings.Builder
+						for _, name := range names {
+							content.WriteString(name + " \n")
+							queue = append(queue, name)
+						}
 
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "the song: " + choiceName + " was added with success",
+								Content: "the song: " + content.String() + " was added with success",
 							},
 						})
 
@@ -214,6 +287,7 @@ var (
 						})
 					}
 				}
+
 				guild, err := s.State.Guild(i.GuildID)
 				if err != nil {
 					fmt.Println("Cound`t fing guild id:", err)
@@ -360,6 +434,7 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 			break
 		}
 		file, err := os.Open("Music\\" + queue[index])
+		fmt.Println("Current music playing: ", queue[index])
 		if err != nil {
 			fmt.Errorf("failed to music file: %w", err)
 		}
@@ -409,14 +484,26 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 	}
 }
 
-func download(link string) {
-	cmd := exec.Command("yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link)
-	stdout, err := cmd.Output()
+func download(link string) []string {
+	paths := []string{}
+	stdout, err := exec.Command("yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link).Output()
+
+	println(len(stdout))
+
+	d := unicode.UTF8.NewDecoder()
+	out, err := d.Bytes(stdout)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		panic(err)
 	}
 
-	fmt.Println(string(stdout))
+	fmt.Println(string(out))
 
+	splitTest := strings.Split(string(stdout), "\"")
+	for i, s := range splitTest {
+		if i%2 == 1 {
+			paths = append(paths, s[6:])
+		}
+	}
+
+	return paths
 }

@@ -4,6 +4,7 @@ go 1.23.5
 
 require (
 	github.com/bwmarrin/discordgo v0.28.1
+	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/jonas747/ogg v0.0.0-20161220051205-b4f6f4cf3757
 	google.golang.org/api v0.218.0
 )
