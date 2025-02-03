@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/dhowden/tag"
 	"github.com/gocolly/colly"
 	"github.com/jonas747/ogg"
+
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
 	"golang.org/x/oauth2/clientcredentials"
@@ -147,11 +149,34 @@ var (
 					panic(err)
 				}
 				for _, file := range dir {
-					if strings.Contains(strings.ToLower(file.Name()), strings.ToLower(filter)) {
+					var sb strings.Builder
+
+					f, err := os.Open("Music/" + file.Name())
+					if err != nil {
+						panic(err)
+					}
+					defer f.Close()
+
+					metadata, err := tag.ReadFrom(f)
+					if err != nil {
+					} else {
+						if !strings.Contains(file.Name(), metadata.Artist()) {
+							sb.WriteString("👥")
+							sb.WriteString(metadata.Artist())
+							sb.WriteString(" | ")
+						}
+					}
+
+					sb.WriteString(file.Name())
+
+					if strings.Contains(strings.ToLower(sb.String()), strings.ToLower(filter)) {
 						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
-							Name:  "🎵" + file.Name(),
+							Name:  "🎵" + sb.String(),
 							Value: "local:" + file.Name(),
 						})
+						if len(choices) > 24 {
+							break
+						}
 					}
 				}
 
@@ -235,9 +260,15 @@ var (
 						fmt.Println("Split 2 eh igual a : ", split[2])
 						links := parseSpotifyPlaylist(spotify.ID(split[2]))
 
+						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+							Type: discordgo.InteractionResponseChannelMessageWithSource,
+							Data: &discordgo.InteractionResponseData{
+								Content: "added the [playlist](" + link.String() + ") to the queue",
+							},
+						})
+
 						for _, link := range links {
-							name := download(link)
-							queue = append(queue, name[0])
+							download(link)
 							if isLink && !isPlaying {
 								for _, vs := range guild.VoiceStates {
 									if vs.UserID == i.Member.User.ID {
@@ -251,34 +282,17 @@ var (
 						}
 					}
 
-					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-						Type: discordgo.InteractionResponseChannelMessageWithSource,
-						Data: &discordgo.InteractionResponseData{
-							Content: "added the [playlist](" + link.String() + ") to the queue",
-						},
-					})
 					return
 				}
 				if strings.Contains(link.Hostname(), "youtu") {
 					isLink = true
-					names := download(options[0].StringValue())
-					var content strings.Builder
-					for _, name := range names {
-						content.WriteString(name + " \n")
-						queue = append(queue, name)
-						for i, item := range queue {
-							println("Item da queue", i)
-							println(item)
-						}
-					}
-
 					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 						Type: discordgo.InteractionResponseChannelMessageWithSource,
 						Data: &discordgo.InteractionResponseData{
-							Content: "the song: ***" + content.String() + "*** was added with success",
+							Content: "adding the [song](" + options[0].StringValue() + ")...",
 						},
 					})
-
+					download(options[0].StringValue())
 				}
 
 				if isLink && !isPlaying {
@@ -312,6 +326,17 @@ var (
 										Content: "> the song: ***" + file.Name() + "*** was added with success",
 									},
 								})
+								if !isPlaying {
+									for _, vs := range guild.VoiceStates {
+										if vs.UserID == i.Member.User.ID {
+											fmt.Println("esta dando join")
+											fmt.Println("queue size: ", len(queue))
+
+											join(guild.ID, vs.ChannelID, s)
+										}
+									}
+									return
+								}
 								return
 							}
 						}
@@ -328,40 +353,15 @@ var (
 					path := split[1]
 
 					if mode == "video" {
-
-						names := download("https://www.youtube.com/watch?v=" + path)
-						var content strings.Builder
-						for _, name := range names {
-							println(name)
-							content.WriteString(name + " \n")
-							queue = append(queue, name)
-						}
-
 						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 							Type: discordgo.InteractionResponseChannelMessageWithSource,
 							Data: &discordgo.InteractionResponseData{
-								Content: "> the song: ***" + content.String() + "*** was added with success",
+								Content: "> adding song if the [link](https://www.youtube.com/watch?v=" + path + ")",
 							},
 						})
 
-						time.Sleep(5 * time.Second)
-					}
-					if mode == "playlist" {
-						names := download("https://www.youtube.com/playlist?list=" + path)
-						var content strings.Builder
-						for _, name := range names {
-							content.WriteString(name + " \n")
-							queue = append(queue, name)
-						}
-
-						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-							Type: discordgo.InteractionResponseChannelMessageWithSource,
-							Data: &discordgo.InteractionResponseData{
-								Content: "> the song: ***" + content.String() + "*** was added with success",
-							},
-						})
-
-						time.Sleep(5 * time.Second)
+						download("https://www.youtube.com/watch?v=" + path)
+						time.Sleep(1 * time.Second)
 					}
 					if mode == "local" {
 						queue = append(queue, path)
@@ -454,7 +454,7 @@ var (
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
-					Content: "Pausing...",
+					Content: "previous song...",
 				},
 			})
 			if index > 0 {
@@ -737,6 +737,9 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 		isPlaying = false
 		voice.Speaking(false)
 		index += 1
+		if index-1 >= len(queue) {
+			index = 0
+		}
 	}
 }
 
@@ -794,8 +797,7 @@ func parseSpotifyPlaylist(id spotify.ID) []string {
 
 }
 
-func download(link string) []string {
-	paths := []string{}
+func download(link string) {
 	stdout, err := exec.Command("./yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link).Output()
 	if err != nil {
 		fmt.Println("could not download video")
@@ -806,9 +808,8 @@ func download(link string) []string {
 	splitTest := strings.Split(string(stdout), "\"")
 	for i, s := range splitTest {
 		if i%2 == 1 {
-			paths = append(paths, s[8:])
+			queue = append(queue, s[8:])
 		}
 	}
 
-	return paths
 }
