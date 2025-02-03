@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"math/rand"
 	"net/url"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/gocolly/colly"
 	"github.com/jonas747/ogg"
 	"github.com/zmb3/spotify/v2"
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
@@ -25,18 +28,17 @@ const (
 )
 
 var (
-	ctx                   context.Context  = nil
-	ytService             *youtube.Service = nil
-	spotifyClient         *spotify.Client  = nil
-	isPlaying                              = false
-	charCount                              = 0
-	emptyqueue                             = true
-	isPaused                               = false
-	integerOptionMinValue                  = 1.0
-	dmPermission                           = false
-	queue                                  = []string{}
-	index                                  = 0
-	count                                  = 0
+	ctx           context.Context  = nil
+	ytService     *youtube.Service = nil
+	spotifyClient *spotify.Client  = nil
+	isPlaying                      = false
+	repeat                         = false
+	doInterrupt                    = false
+	charCount                      = 0
+	isPaused                       = false
+	queue                          = []string{}
+	index                          = 0
+	count                          = 0
 
 	commands = []*discordgo.ApplicationCommand{
 		{
@@ -64,12 +66,49 @@ var (
 			},
 		},
 		{
+			Name:        "next",
+			Description: "jump to the next song",
+		},
+		{
+			Name:        "prev",
+			Description: "jump to the previous song",
+		},
+		{
 			Name:        "pause",
-			Description: "toggle the music",
+			Description: "pause the music",
+		},
+		{
+			Name:        "shuffle",
+			Description: "shuffle current queue",
+		},
+		{
+			Name:        "repeat",
+			Description: "toggle repeat option",
 		},
 		{
 			Name:        "queue",
 			Description: "display current queue",
+		},
+		{
+			Name:        "queue-all",
+			Description: "display all history of the current queue",
+		},
+		{
+			Name:        "clear",
+			Description: "clear all history of the current queue",
+		},
+		{
+			Name:        "save",
+			Description: "save the current history to a playlist",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:         "name",
+					Description:  "name of the playlist",
+					Type:         discordgo.ApplicationCommandOptionString,
+					Required:     true,
+					Autocomplete: true,
+				},
+			},
 		},
 		{
 			Name:        "basic-command",
@@ -90,6 +129,18 @@ var (
 				if strings.Contains(link.Hostname(), "spotify") || strings.Contains(link.Hostname(), "youtu") {
 					return
 				}
+				pl, err := os.ReadDir("Playlist")
+				if err != nil {
+					panic(err)
+				}
+				for _, file := range pl {
+					if strings.Contains(strings.ToLower(file.Name()), strings.ToLower(filter)) {
+						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+							Name:  "📀" + file.Name(),
+							Value: "pl:" + file.Name(),
+						})
+					}
+				}
 
 				dir, err := os.ReadDir("Music")
 				if err != nil {
@@ -107,7 +158,7 @@ var (
 				//25 is the discord choice limit
 				maxResults := 24 - len(choices)
 				if maxResults < 0 {
-					count += 1
+					charCount += 1
 				}
 				time.Sleep(2 * time.Second)
 
@@ -120,6 +171,8 @@ var (
 					})
 					return
 				}
+
+				fmt.Println("searching using yhoutube api :(", filter)
 
 				call := ytService.Search.List([]string{"id", "snippet"}).
 					Q(filter).
@@ -157,13 +210,21 @@ var (
 					},
 				})
 			case discordgo.InteractionApplicationCommand:
+				charCount = 0
 				isLink := false
+				guild, err := s.State.Guild(i.GuildID)
+				if err != nil {
+					fmt.Println("Cound`t fing guild id:", err)
+					return
+				}
 
 				options := i.ApplicationCommandData().Options
 				optionMap := make(map[string]*discordgo.ApplicationCommandInteractionDataOption, len(options))
 				for _, opt := range options {
 					optionMap[opt.Name] = opt
 				}
+
+				println("choice: ", options[0].StringValue())
 
 				link, err := url.Parse(options[0].StringValue())
 				if strings.Contains(link.Hostname(), "spotify") {
@@ -172,7 +233,22 @@ var (
 					split := strings.Split(link.Path, "/")
 					if split[1] == "playlist" {
 						fmt.Println("Split 2 eh igual a : ", split[2])
-						parseSpotifyPlaylist(spotify.ID(split[2]))
+						links := parseSpotifyPlaylist(spotify.ID(split[2]))
+
+						for _, link := range links {
+							name := download(link)
+							queue = append(queue, name[0])
+							if isLink && !isPlaying {
+								for _, vs := range guild.VoiceStates {
+									if vs.UserID == i.Member.User.ID {
+										fmt.Println("esta dando join")
+										fmt.Println("queue size: ", len(queue))
+
+										go join(guild.ID, vs.ChannelID, s)
+									}
+								}
+							}
+						}
 					}
 
 					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -181,6 +257,7 @@ var (
 							Content: "added the [playlist](" + link.String() + ") to the queue",
 						},
 					})
+					return
 				}
 				if strings.Contains(link.Hostname(), "youtu") {
 					isLink = true
@@ -204,17 +281,13 @@ var (
 
 				}
 
-				if isLink {
-					guild, err := s.State.Guild(i.GuildID)
-					if err != nil {
-						fmt.Println("Cound`t fing guild id:", err)
-						return
-					}
-					if !isPlaying {
-						for _, vs := range guild.VoiceStates {
-							if vs.UserID == i.Member.User.ID {
-								join(guild.ID, vs.ChannelID, s)
-							}
+				if isLink && !isPlaying {
+					for _, vs := range guild.VoiceStates {
+						if vs.UserID == i.Member.User.ID {
+							fmt.Println("esta dando join")
+							fmt.Println("queue size: ", len(queue))
+
+							join(guild.ID, vs.ChannelID, s)
 						}
 					}
 					return
@@ -255,9 +328,11 @@ var (
 					path := split[1]
 
 					if mode == "video" {
+
 						names := download("https://www.youtube.com/watch?v=" + path)
 						var content strings.Builder
 						for _, name := range names {
+							println(name)
 							content.WriteString(name + " \n")
 							queue = append(queue, name)
 						}
@@ -297,9 +372,30 @@ var (
 							},
 						})
 					}
+					if mode == "pl" {
+						pl, err := os.Open("Playlist/" + path)
+						if err != nil {
+							panic(err)
+						}
+						file, err := io.ReadAll(pl)
+						if err != nil {
+							fmt.Println("could not read playlist file")
+						}
+						list := string(file)
+						split := strings.Split(list, "\n")
+
+						for _, path := range split {
+							queue = append(queue, path)
+						}
+						s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+							Type: discordgo.InteractionResponseChannelMessageWithSource,
+							Data: &discordgo.InteractionResponseData{
+								Content: "> the playlist: ***" + path + "*** was added with success",
+							},
+						})
+					}
 				}
 
-				guild, err := s.State.Guild(i.GuildID)
 				if err != nil {
 					fmt.Println("Cound`t fing guild id:", err)
 					return
@@ -344,6 +440,28 @@ var (
 				},
 			})
 		},
+		"next": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "next song...",
+				},
+			})
+			doInterrupt = true
+		},
+		"prev": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Pausing...",
+				},
+			})
+			if index > 0 {
+				index -= 2
+			}
+			doInterrupt = true
+		},
 		"pause": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if isPaused {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -362,6 +480,38 @@ var (
 			}
 			isPaused = !isPaused
 		},
+		"shuffle": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+			for i := range queue[index:] {
+				j := rand.Intn(i + 1)
+				queue[i], queue[j] = queue[j], queue[i]
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "current queue shuffled",
+				},
+			})
+		},
+		"repeat": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			repeat = !repeat
+
+			repeatString := ""
+
+			if repeat {
+				repeatString = "true"
+			} else {
+				repeatString = "false"
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "the repeat option is now set to" + repeatString,
+				},
+			})
+		},
 		"queue": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			var contentText strings.Builder
 			contentText.WriteString(">>> # Queue\n")
@@ -375,6 +525,77 @@ var (
 					Content: contentText.String(),
 				},
 			})
+		},
+		"queue-all": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			var contentText strings.Builder
+			contentText.WriteString(">>> # Queue\n")
+			for _, songs := range queue {
+				contentText.WriteString("* " + songs + "\n")
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: contentText.String(),
+				},
+			})
+		},
+		"clear": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			queue = []string{}
+			index = 0
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "the queue was cleared",
+				},
+			})
+		},
+		"save": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+			switch i.Type {
+			case discordgo.InteractionApplicationCommandAutocomplete:
+
+				filter := i.ApplicationCommandData().Options[0].StringValue()
+				choices := []*discordgo.ApplicationCommandOptionChoice{}
+
+				dir, err := os.ReadDir("Playlist")
+				if err != nil {
+					panic(err)
+				}
+				for _, file := range dir {
+					if strings.Contains(strings.ToLower(file.Name()), strings.ToLower(filter)) {
+						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+							Name:  file.Name(),
+							Value: file.Name(),
+						})
+					}
+				}
+
+			case discordgo.InteractionApplicationCommand:
+				filter := i.ApplicationCommandData().Options[0].StringValue()
+
+				playlist, err := os.Create("./Playlist/" + filter)
+				if err != nil {
+					fmt.Println("could not open file")
+				}
+				defer playlist.Close()
+
+				for _, path := range queue {
+					_, err := playlist.WriteString(path + "\n")
+					if err != nil {
+						fmt.Println("erro na playlist")
+					}
+				}
+
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "created the playlist " + filter,
+					},
+				})
+			}
+
 		},
 		"basic-command": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -456,11 +677,14 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 	}
 
 	for {
-		isPlaying = true
+		if len(queue) == 0 {
+			continue
+		}
 		if index+1 > len(queue) {
-			isPlaying = false
 			break
 		}
+
+		isPlaying = true
 		file, err := os.Open("Music/" + queue[index])
 		fmt.Println("Current music playing: ", queue[index])
 		if err != nil {
@@ -493,6 +717,10 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 		voice.Speaking(true)
 		packetDecoder := ogg.NewPacketDecoder(pageDecoder)
 		for {
+			if doInterrupt {
+				doInterrupt = false
+				break
+			}
 			if isPaused {
 				continue
 			}
@@ -512,9 +740,12 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 	}
 }
 
-func parseSpotifyPlaylist(id spotify.ID) {
+func parseSpotifyPlaylist(id spotify.ID) []string {
+	links := []string{}
+
 	fmt.Println("parsing the playlist")
-	ids := []string{}
+
+	c := colly.NewCollector()
 
 	fields := spotify.Fields("items(track)")
 
@@ -527,35 +758,45 @@ func parseSpotifyPlaylist(id spotify.ID) {
 
 	for _, item := range results.Items {
 
+		linkFound := false
+
 		filter := item.Track.Track.Name + " " + item.Track.Track.Artists[0].Name
+
 		fmt.Println("This is the filter: ", filter)
 
-		call := ytService.Search.List([]string{"id", "snippet"}).
-			Q(filter).
-			Type("video").
-			VideoCategoryId("10").
-			MaxResults(1)
+		c.OnHTML("a[href]", func(e *colly.HTMLElement) {
+			if linkFound {
+				return
+			}
+			if e.Attr("class") == "result__url" {
+				linkFound = true
+				links = append(links, e.Text)
+			}
+		})
 
-		response, err := call.Do()
-		if err != nil {
-			fmt.Println("Faz o L \n", err)
+		var url strings.Builder
+		url.WriteString("https://html.duckduckgo.com/html/?q=youtube%20")
+
+		split := strings.Split(filter, " ")
+
+		for _, s := range split {
+			url.WriteString("%20")
+			url.WriteString(strings.Trim(s, "&"))
 		}
 
-		ids = append(ids, response.Items[0].Id.VideoId)
-
-		for _, id := range ids {
-			fmt.Println("The id is: ", id)
-			name := download("https://www.youtube.com/watch?v=" + id)
-
-			fmt.Println("The name is: ", name[0])
-			queue = append(queue, name[0])
+		err := c.Visit(url.String())
+		if err != nil {
+			println(err)
 		}
 	}
+
+	return links
+
 }
 
 func download(link string) []string {
 	paths := []string{}
-	stdout, err := exec.Command("yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link).Output()
+	stdout, err := exec.Command("./yt-dlp", "--cookies", "./Secret/www.youtube.com_cookies.txt", "-x", "--embed-metadata", "-o", "./Music/%(title)s", "--audio-format", "mp3", link).Output()
 	if err != nil {
 		fmt.Println("could not download video")
 	}
