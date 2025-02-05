@@ -1,3 +1,5 @@
 Music/*
+!Music/.gitkeep 
 Secret/*
+!Secret/.gitkeep 
 .env
