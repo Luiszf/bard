@@ -14,7 +14,7 @@
 
     packages.x86_64-linux.default = pkgs.buildEnv {
       name = "dev"; 
-      paths = [pkgs.python3 pkgs.go pkgs.ffmpeg ];
+      paths = [pkgs.gcc pkgs.python3 pkgs.go pkgs.ffmpeg ];
     };
 
   };

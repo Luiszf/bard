@@ -737,7 +737,7 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 		isPlaying = false
 		voice.Speaking(false)
 		index += 1
-		if index-1 >= len(queue) {
+		if index == len(queue) && repeat {
 			index = 0
 		}
 	}
