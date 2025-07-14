@@ -1,9 +1,9 @@
 package main
-
 import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/url"
 	"os"
@@ -16,6 +16,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/dhowden/tag"
 	"github.com/gocolly/colly"
+	"github.com/joho/godotenv"
 	"github.com/jonas747/ogg"
 
 	"github.com/zmb3/spotify/v2"
@@ -33,9 +34,11 @@ var (
 	ctx           context.Context  = nil
 	ytService     *youtube.Service = nil
 	spotifyClient *spotify.Client  = nil
+	voice 	    *discordgo.VoiceConnection = nil
 	isPlaying                      = false
 	repeat                         = false
 	doInterrupt                    = false
+	justDownload 		       = false
 	charCount                      = 0
 	isPaused                       = false
 	queue                          = []string{}
@@ -55,9 +58,7 @@ var (
 					Autocomplete: true,
 				},
 			},
-		},
-		{
-			Name:        "list",
+		}, {Name: "list",
 			Description: "list local files",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
@@ -70,6 +71,10 @@ var (
 		{
 			Name:        "next",
 			Description: "jump to the next song",
+		},
+		{
+			Name:        "all",
+			Description: "play all songs random",
 		},
 		{
 			Name:        "prev",
@@ -86,6 +91,14 @@ var (
 		{
 			Name:        "repeat",
 			Description: "toggle repeat option",
+		},
+		{
+			Name:        "just-download",
+			Description: "toggle just download option",
+		},
+		{
+			Name:        "disconnect",
+			Description: "disconnect the bot",
 		},
 		{
 			Name:        "queue",
@@ -512,6 +525,37 @@ var (
 				},
 			})
 		},
+		"just-download": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			justDownload = !justDownload
+
+			jdString := ""
+
+			if justDownload {
+				jdString = "true"
+			} else {
+				jdString = "false"
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "the just download option is now set to: " + jdString,
+				},
+			})
+		},
+		"disconnect": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+			voice.Disconnect()
+
+			isPlaying = false
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "bot disconnected",
+				},
+			})
+		},
 		"queue": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			var contentText strings.Builder
 			contentText.WriteString(">>> # Queue\n")
@@ -597,6 +641,32 @@ var (
 			}
 
 		},
+		"all": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+			guild, err := s.State.Guild(i.GuildID)
+
+			dir, err := os.ReadDir("Music")
+			if err != nil {
+			}
+
+			for _, i := range dir {
+				queue = append(queue, i.Name())
+			}
+
+			for _, vs := range guild.VoiceStates {
+				if vs.UserID == i.Member.User.ID {
+					fmt.Println("esta dando join")
+					fmt.Println("queue size: ", len(queue))
+					go join(guild.ID, vs.ChannelID, s)
+				}
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Playing all dowloads songs in random order",
+				},
+			})
+		},
 		"basic-command": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -609,6 +679,12 @@ var (
 )
 
 func main() {
+
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
 	context := context.Background()
 	ctx = context
 
@@ -670,11 +746,16 @@ func main() {
 
 func join(GuildID string, ChannelID string, session *discordgo.Session) {
 
-	voice, err := session.ChannelVoiceJoin(GuildID, ChannelID, false, true)
+	if (justDownload) {
+		return
+	}
+
+	curVoice, err := session.ChannelVoiceJoin(GuildID, ChannelID, false, true)
 	if err != nil {
 		fmt.Println("failed to join voice channel:", err)
 		return
 	}
+	voice = curVoice
 
 	for {
 		if len(queue) == 0 {
@@ -737,7 +818,7 @@ func join(GuildID string, ChannelID string, session *discordgo.Session) {
 		isPlaying = false
 		voice.Speaking(false)
 		index += 1
-		if index == len(queue) && repeat {
+		if index-1 >= len(queue) {
 			index = 0
 		}
 	}
